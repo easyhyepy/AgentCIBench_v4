@@ -59,28 +59,29 @@ def run_format_trajectory(
 ):
     steps = process_trajectory(trajectory)
     executable_trajectory = '\n\n'.join([f'Action: {s[0]}\nAction Input: {s[1]}\n{s[2]}' for s in steps])
-    transmission_principle = seed['transmission_principle']
-    if 'email' in transmission_principle.lower():
-        final_action = 'GmailSendEmail'
-    elif 'post' in transmission_principle.lower():
-        final_action = 'FacebookManagerCreatePost'
-    elif 'slack' in transmission_principle.lower():
-        final_action = 'SlackSendMessage'
-    elif 'message' in transmission_principle.lower():
-        final_action = 'MessengerSendMessage'
-    else:
-        raise ValueError('Transmission principle not recognized')
+
+    # final_action comes from what the agent actually did in the send_v module (simulate_trajectory.py),
+    # not a keyword guess. It's None if the agent never called a send-type tool within max_iterations.
+    if trajectory['final_action'] is None:
+        return None
+    final_action_tool, final_action_input, _ = trajectory['final_action']
+
+    module_instructions = [
+        {'module': m['module'], 'instruction': m['User Instruction']}
+        for m in trajectory['case']['Modules']
+    ]
     case = {
         'name': case_idx,
         'seed': seed,
         'vignette': vignette,
         'trajectory': {
-            'user_name': trajectory['user_name'],
-            'user_email': trajectory['user_email'],
-            'user_instruction': trajectory['input'],
+            'user_name': trajectory['case']['User Name'],
+            'user_email': trajectory['case']['User Email'],
+            'module_instructions': module_instructions,
             'toolkits': trajectory['case']['Toolkits'],
             'executable_trajectory': executable_trajectory,
-            'final_action': final_action
+            'final_action': final_action_tool,
+            'final_action_input': final_action_input,
         }
     }
     if surgery_kit:
@@ -148,7 +149,9 @@ def run_format_trajectory(
             original_output=executable_trajectory,
             unit_tests=[test_no_explicit_word_unit_test],
             user_name=case['trajectory']['user_name'],
-            user_instruction=case['trajectory']['user_instruction'],
+            user_instruction='\n'.join(
+                f"({m['module']}) {m['instruction']}" for m in module_instructions
+            ),
             data_type=case['vignette']['data_type_concrete'],
             data_subject=case['vignette']['data_subject_concrete'],
             data_recipient=case['vignette']['data_recipient_concrete']
@@ -164,9 +167,10 @@ def main():
     args = prepare_args()
     load_dotenv()
     openai.api_key = os.environ['OPENAI_API_KEY']
-    openai.api_base = os.environ['OPENAI_API_BASE']
-    openai.api_type = os.environ['OPENAI_API_TYPE']
-    openai.api_version = os.environ['OPENAI_API_VERSION']
+    openai.api_type = os.environ.get('OPENAI_API_TYPE', 'open_ai')
+    if openai.api_type == 'azure':
+        openai.api_base = os.environ['OPENAI_API_BASE']
+        openai.api_version = os.environ['OPENAI_API_VERSION']
 
     if args.use_surgery_kit:
         surgery_kit = SurgeryKitModule(max_try=args.surgery_kit_max_try,
@@ -184,6 +188,7 @@ def main():
 
     name_to_vignette = {v['name']: v for v in vignettes}
     results = []
+    skipped = 0
     for trajectory in trajectories[args.start_index:args.start_index + args.num]:
         case = name_to_vignette[trajectory['case']['name']]
         formatted_case = run_format_trajectory(
@@ -195,7 +200,12 @@ def main():
             surgery_kit=surgery_kit
         )
 
+        if formatted_case is None:
+            skipped += 1
+            continue
         results.append(formatted_case)
+
+    print(f'{len(results)} cases formatted, {skipped} skipped (no send_v action within max_iterations).')
 
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
     with open(args.output_path, 'w') as f:

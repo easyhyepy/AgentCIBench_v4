@@ -536,5 +536,6 @@ class PrivacyAdversarialVirtualAgentExecutorWithToolkit(
         "user_name",
         "user_email",
         "privacy_sensitive_context",
+        "module_goal",
     ]
     refine_observation: bool = True
